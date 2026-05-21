@@ -1,6 +1,8 @@
-[submodule "Login"]
-	path = Login
+[submodule "Loginqldoanhoi"]
+	path = Loginqldoanhoi
 	url = https://github.com/ouityouth/Loginqldoanhoi.git
-[submodule "QLHoatDong"]
-	path = QLHoatDong
+	branch = main
+[submodule "Quanlyhoatdong"]
+	path = Quanlyhoatdong
 	url = https://github.com/ouityouth/Quanlyhoatdong.git
+	branch = main
