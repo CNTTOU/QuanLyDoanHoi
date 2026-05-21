@@ -1,0 +1,15 @@
+{
+  "name": "quan-ly-doan-hoi-workspace",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:login": "npm --prefix Loginqldoanhoi run build",
+    "build:admin": "npm --prefix Quanlyhoatdong run build",
+    "build:all": "npm run build:login && npm run build:admin",
+    "preview:paths": "node gateway/server.mjs",
+    "seed:firestore": "npm --prefix Quanlyhoatdong run seed:firestore",
+    "bootstrap:admin": "npm --prefix Quanlyhoatdong run bootstrap:admin",
+    "deploy:rules": "npm --prefix Quanlyhoatdong run deploy:rules",
+    "deploy:rules:bootstrap": "npm --prefix Quanlyhoatdong run deploy:rules:bootstrap"
+  }
+}
