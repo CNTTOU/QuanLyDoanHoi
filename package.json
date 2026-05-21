@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "install:apps": "npm --prefix Loginqldoanhoi ci && npm --prefix Quanlyhoatdong ci",
+    "install:apps": "node scripts/install-apps.mjs",
     "build:login": "npm --prefix Loginqldoanhoi run build",
     "build:admin": "npm --prefix Quanlyhoatdong run build",
     "build:all": "npm run build:login && npm run build:admin",
