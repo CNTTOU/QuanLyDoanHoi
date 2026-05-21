@@ -1,0 +1,6 @@
+[submodule "Login"]
+	path = Login
+	url = https://github.com/ouityouth/Loginqldoanhoi.git
+[submodule "QLHoatDong"]
+	path = QLHoatDong
+	url = https://github.com/ouityouth/Quanlyhoatdong.git
