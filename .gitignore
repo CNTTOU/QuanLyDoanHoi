@@ -50,9 +50,8 @@ ui-debug.log
 coverage/
 **/coverage/
 
-#Project
-Quanlyhoatdong/
-Loginqldoanhoi/
-
-#Key
+# Keys
 keys/
+login-qldoanhoi.json
+quanlyhoatdong.json
+*-service-account.json

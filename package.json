@@ -3,9 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "install:apps": "npm ci --prefix Loginqldoanhoi && npm ci --prefix Quanlyhoatdong",
     "build:login": "npm --prefix Loginqldoanhoi run build",
     "build:admin": "npm --prefix Quanlyhoatdong run build",
     "build:all": "npm run build:login && npm run build:admin",
+    "vercel-build": "npm run install:apps && npm run build:all && node scripts/prepare-vercel-static.mjs",
     "preview:paths": "node gateway/server.mjs",
     "seed:firestore": "npm --prefix Quanlyhoatdong run seed:firestore",
     "bootstrap:admin": "npm --prefix Quanlyhoatdong run bootstrap:admin",

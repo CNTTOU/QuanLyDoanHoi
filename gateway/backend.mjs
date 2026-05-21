@@ -72,15 +72,17 @@ function signFirebaseCustomToken(serviceAccount, uid, claims = {}) {
   return `${unsigned}.${base64Url(signature)}`;
 }
 
-function loadServiceAccount(filePath) {
-  return JSON.parse(readFileSync(filePath, "utf8"));
+function loadServiceAccount(source) {
+  const trimmed = String(source ?? "").trim();
+  if (trimmed.startsWith("{")) return JSON.parse(trimmed);
+  return JSON.parse(readFileSync(source, "utf8"));
 }
 
-async function getAccessToken(serviceAccountPath) {
-  const cached = accessTokenCache.get(serviceAccountPath);
+async function getAccessToken(serviceAccountSource) {
+  const cached = accessTokenCache.get(serviceAccountSource);
   if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
 
-  const serviceAccount = loadServiceAccount(serviceAccountPath);
+  const serviceAccount = loadServiceAccount(serviceAccountSource);
   const response = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -94,7 +96,7 @@ async function getAccessToken(serviceAccountPath) {
     throw new Error(body.error_description || "Không lấy được token gateway.");
   }
   const token = String(body.access_token);
-  accessTokenCache.set(serviceAccountPath, {
+  accessTokenCache.set(serviceAccountSource, {
     token,
     expiresAt: Date.now() + Number(body.expires_in ?? 3600) * 1000,
   });
@@ -117,9 +119,11 @@ function createConfig(rootDir) {
       process.env.VITE_FIREBASE_PROJECT_ID ||
       "quanlyhoatdong-278e0",
     identityServiceAccountPath:
+      process.env.IDENTITY_SERVICE_ACCOUNT_JSON ||
       process.env.IDENTITY_SERVICE_ACCOUNT_PATH ||
       join(rootDir, "keys", "login-qldoanhoi.json"),
     activityServiceAccountPath:
+      process.env.ACTIVITY_SERVICE_ACCOUNT_JSON ||
       process.env.ACTIVITY_SERVICE_ACCOUNT_PATH ||
       join(rootDir, "keys", "quanlyhoatdong.json"),
   };
@@ -753,6 +757,11 @@ async function handleEvidenceAction(config, ctx, body) {
 }
 
 async function readJsonBody(request) {
+  if (request.body !== undefined) {
+    if (typeof request.body === "string") return JSON.parse(request.body || "{}");
+    return request.body ?? {};
+  }
+
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
   if (!chunks.length) return {};

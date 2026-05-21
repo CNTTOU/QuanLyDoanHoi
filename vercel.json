@@ -1,0 +1,31 @@
+{
+  "buildCommand": "npm run vercel-build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/login/:path*",
+      "destination": "/login/index.html"
+    },
+    {
+      "source": "/hoat-dong/:path*",
+      "destination": "/hoat-dong/index.html"
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/hoat-dong/featured",
+      "permanent": false
+    },
+    {
+      "source": "/login",
+      "destination": "/login/",
+      "permanent": false
+    },
+    {
+      "source": "/hoat-dong",
+      "destination": "/hoat-dong/",
+      "permanent": false
+    }
+  ]
+}
