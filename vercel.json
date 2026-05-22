@@ -2,7 +2,7 @@
   "buildCommand": "npm run vercel-build",
   "outputDirectory": "dist",
   "cleanUrls": false,
-  "trailingSlash": true,
+  "trailingSlash": false,
   "rewrites": [
     {
       "source": "/api/:path*",
@@ -29,16 +29,6 @@
     {
       "source": "/",
       "destination": "/hoat-dong/featured",
-      "permanent": false
-    },
-    {
-      "source": "/login",
-      "destination": "/login/",
-      "permanent": false
-    },
-    {
-      "source": "/hoat-dong",
-      "destination": "/hoat-dong/",
       "permanent": false
     }
   ]
