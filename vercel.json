@@ -17,6 +17,14 @@
       "destination": "/hoat-dong/assets/:path*"
     },
     {
+      "source": "/login",
+      "destination": "/login/index.html"
+    },
+    {
+      "source": "/hoat-dong",
+      "destination": "/hoat-dong/index.html"
+    },
+    {
       "source": "/login/:path*",
       "destination": "/login/index.html"
     },
@@ -29,16 +37,6 @@
     {
       "source": "/",
       "destination": "/hoat-dong/featured",
-      "permanent": false
-    },
-    {
-      "source": "/login",
-      "destination": "/login/",
-      "permanent": false
-    },
-    {
-      "source": "/hoat-dong",
-      "destination": "/hoat-dong/",
       "permanent": false
     }
   ]
