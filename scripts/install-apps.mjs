@@ -5,7 +5,7 @@ const apps = ["Loginqldoanhoi", "Quanlyhoatdong"];
 
 for (const app of apps) {
   console.log(`Installing dependencies in ${app}...`);
-  const result = spawnSync(npmCommand, ["ci"], {
+  const result = spawnSync(npmCommand, ["install", "--no-audit", "--no-fund"], {
     cwd: app,
     stdio: "inherit",
     shell: process.platform === "win32",
