@@ -10,6 +10,14 @@
       "dest": "/api/$1"
     },
     {
+      "src": "/login/assets/(.*)",
+      "dest": "/login/assets/$1"
+    },
+    {
+      "src": "/hoat-dong/assets/(.*)",
+      "dest": "/hoat-dong/assets/$1"
+    },
+    {
       "src": "/login(?:/(.*))?",
       "dest": "/login/index.html"
     },
