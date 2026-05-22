@@ -3,6 +3,13 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "handle": "filesystem"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "/api/:path*"
+    },
+    {
       "source": "/login/:path*",
       "destination": "/login/index.html"
     },
