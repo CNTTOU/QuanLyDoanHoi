@@ -5,15 +5,31 @@ import { join } from "node:path";
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const shell = process.platform === "win32";
 const apps = [
-  { name: "Loginqldoanhoi", output: "login" },
-  { name: "Quanlyhoatdong", output: "hoat-dong" },
+  {
+    name: "Loginqldoanhoi",
+    output: "login",
+    env: {
+      VITE_APP_BASE_PATH: "/login/",
+      VITE_ADMIN_APP_URL: "/hoat-dong",
+    },
+  },
+  {
+    name: "Quanlyhoatdong",
+    output: "hoat-dong",
+    env: {
+      VITE_APP_BASE_PATH: "/hoat-dong/",
+      VITE_LOGIN_APP_URL: "/login/",
+      VITE_GATEWAY_API_BASE: "",
+    },
+  },
 ];
 
-function run(command, args, cwd) {
+function run(command, args, cwd, env = {}) {
   const label = [command, ...args].join(" ");
   console.log(`Running ${label} in ${cwd}...`);
   const result = spawnSync(command, args, {
     cwd,
+    env: { ...process.env, ...env },
     stdio: "inherit",
     shell,
   });
@@ -24,7 +40,7 @@ function run(command, args, cwd) {
 
 for (const app of apps) {
   run(npmCommand, ["install", "--no-audit", "--no-fund"], app.name);
-  run(npmCommand, ["run", "build"], app.name);
+  run(npmCommand, ["run", "build"], app.name, app.env);
 }
 
 const root = process.cwd();
