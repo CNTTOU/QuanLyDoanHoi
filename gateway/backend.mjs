@@ -1,4 +1,4 @@
-import { createSign } from "node:crypto";
+import { createHash, createHmac, createSign, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -126,6 +126,20 @@ function createConfig(rootDir) {
       process.env.ACTIVITY_SERVICE_ACCOUNT_JSON ||
       process.env.ACTIVITY_SERVICE_ACCOUNT_PATH ||
       join(rootDir, "keys", "quanlyhoatdong.json"),
+    activityStorageBucket:
+      process.env.ACTIVITY_STORAGE_BUCKET ||
+      process.env.VITE_FIREBASE_STORAGE_BUCKET ||
+      "quanlyhoatdong-278e0.firebasestorage.app",
+    cloudinaryCloudName: process.env.CLOUDINARY_CLOUD_NAME,
+    cloudinaryApiKey: process.env.CLOUDINARY_API_KEY,
+    cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET,
+    r2AccountId: process.env.R2_ACCOUNT_ID || process.env.CLOUDFLARE_R2_ACCOUNT_ID,
+    r2AccessKeyId: process.env.R2_ACCESS_KEY_ID || process.env.CLOUDFLARE_R2_ACCESS_KEY_ID,
+    r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY || process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY,
+    r2BucketName: process.env.R2_BUCKET_NAME || process.env.CLOUDFLARE_R2_BUCKET_NAME,
+    r2PublicBaseUrl: process.env.R2_PUBLIC_BASE_URL || process.env.CLOUDFLARE_R2_PUBLIC_BASE_URL,
+    metaAppId: process.env.META_APP_ID || process.env.FACEBOOK_APP_ID,
+    metaAppSecret: process.env.META_APP_SECRET || process.env.FACEBOOK_APP_SECRET,
   };
 }
 
@@ -395,6 +409,529 @@ async function addAuditLog(config, ctx, log) {
   }).catch(() => undefined);
 }
 
+function trimString(value) {
+  return String(value ?? "").trim();
+}
+
+const IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const DOCUMENT_MIME_TYPES = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
+const SPREADSHEET_MIME_TYPES = new Set([
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "text/csv",
+]);
+const FILE_EXTENSION_BY_MIME = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "application/pdf": "pdf",
+  "application/msword": "doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.ms-excel": "xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "text/csv": "csv",
+};
+const MIME_BY_FILE_EXTENSION = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  csv: "text/csv",
+};
+
+function sanitizeFileName(value) {
+  return trimString(value)
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 120) || "minh-chung";
+}
+
+function getUploadKind(mimeType) {
+  if (IMAGE_MIME_TYPES.has(mimeType)) return "image";
+  if (DOCUMENT_MIME_TYPES.has(mimeType)) return "document";
+  if (SPREADSHEET_MIME_TYPES.has(mimeType)) return "spreadsheet";
+  return "";
+}
+
+function assertUploadFile(file) {
+  const extension = trimString(file?.name).split(".").pop()?.toLowerCase() || "";
+  const mimeType = trimString(file?.type).toLowerCase() || MIME_BY_FILE_EXTENSION[extension] || "";
+  const kind = getUploadKind(mimeType);
+  if (!kind) throw new Error("Chỉ hỗ trợ upload ảnh JPG/PNG/WebP/GIF, PDF/Word hoặc Excel/CSV.");
+
+  const size = Number(file?.size || 0);
+  const maxSize = kind === "image" ? 15 * 1024 * 1024 : 25 * 1024 * 1024;
+  if (!size || size > maxSize) {
+    throw new Error(kind === "image" ? "Ảnh tối đa 15MB." : "File tài liệu tối đa 25MB.");
+  }
+
+  const buffer = Buffer.from(String(file?.dataBase64 || ""), "base64");
+  if (!buffer.length || buffer.length > maxSize) {
+    throw new Error("Dữ liệu file upload không hợp lệ.");
+  }
+
+  return { mimeType, kind, size, buffer };
+}
+
+function buildStorageObjectName(ctx, activityId, fileName, mimeType) {
+  const extension = FILE_EXTENSION_BY_MIME[mimeType] || "bin";
+  const safeName = sanitizeFileName(fileName).replace(/\.[a-z0-9]+$/i, "");
+  const unitId = sanitizeFileName(ctx.profile.ma_don_vi || "don-vi");
+  const targetActivityId = sanitizeFileName(activityId || "khong-gan-hoat-dong");
+  return `minh-chung/${unitId}/${targetActivityId}/${Date.now()}-${randomUUID()}-${safeName}.${extension}`;
+}
+
+async function uploadToFirebaseStorage(config, file, uploadInfo, objectName) {
+  const token = await getAccessToken(config.activityServiceAccountPath);
+  const downloadToken = randomUUID();
+  const metadata = {
+    name: objectName,
+    contentType: uploadInfo.mimeType,
+    metadata: { firebaseStorageDownloadTokens: downloadToken },
+  };
+  const boundary = `gateway-${randomUUID()}`;
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\ncontent-type: application/json; charset=utf-8\r\n\r\n${JSON.stringify(metadata)}\r\n`),
+    Buffer.from(`--${boundary}\r\ncontent-type: ${uploadInfo.mimeType}\r\n\r\n`),
+    uploadInfo.buffer,
+    Buffer.from(`\r\n--${boundary}--`),
+  ]);
+  const response = await fetch(
+    `https://storage.googleapis.com/upload/storage/v1/b/${encodeURIComponent(config.activityStorageBucket)}/o?uploadType=multipart`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": `multipart/related; boundary=${boundary}`,
+      },
+      body,
+    },
+  );
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(result?.error?.message || "Upload Firebase Storage thất bại.");
+  }
+  const encodedPath = encodeURIComponent(objectName);
+  return {
+    url: `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(config.activityStorageBucket)}/o/${encodedPath}?alt=media&token=${downloadToken}`,
+    storage: "firebase_storage",
+    path: objectName,
+  };
+}
+
+async function uploadToCloudinary(config, file, uploadInfo) {
+  if (!config.cloudinaryCloudName || !config.cloudinaryApiKey || !config.cloudinaryApiSecret) {
+    return null;
+  }
+  const resourceType = uploadInfo.kind === "image" ? "image" : "auto";
+  const timestamp = Math.floor(Date.now() / 1000);
+  const folder = "quan-ly-doan-hoi/minh-chung";
+  const signatureBase = `folder=${folder}&timestamp=${timestamp}${config.cloudinaryApiSecret}`;
+  const signature = createHash("sha1").update(signatureBase).digest("hex");
+  const formData = new FormData();
+  formData.set("file", new Blob([uploadInfo.buffer], { type: uploadInfo.mimeType }), sanitizeFileName(file.name));
+  formData.set("api_key", config.cloudinaryApiKey);
+  formData.set("timestamp", String(timestamp));
+  formData.set("folder", folder);
+  formData.set("signature", signature);
+
+  const response = await fetch(
+    `https://api.cloudinary.com/v1_1/${encodeURIComponent(config.cloudinaryCloudName)}/${resourceType}/upload`,
+    { method: "POST", body: formData },
+  );
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(result?.error?.message || "Upload Cloudinary thất bại.");
+  }
+  return {
+    url: result.secure_url,
+    storage: "cloudinary",
+    path: `${result.resource_type || resourceType}/${result.public_id}`,
+  };
+}
+
+function hmac(key, value, output) {
+  return createHmac("sha256", key).update(value).digest(output);
+}
+
+function sha256Hex(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function r2SigningKey(secret, dateStamp) {
+  const dateKey = hmac(`AWS4${secret}`, dateStamp);
+  const regionKey = hmac(dateKey, "auto");
+  const serviceKey = hmac(regionKey, "s3");
+  return hmac(serviceKey, "aws4_request");
+}
+
+async function uploadToCloudflareR2(config, uploadInfo, objectName) {
+  if (
+    !config.r2AccountId ||
+    !config.r2AccessKeyId ||
+    !config.r2SecretAccessKey ||
+    !config.r2BucketName ||
+    !config.r2PublicBaseUrl
+  ) {
+    return null;
+  }
+
+  const now = new Date();
+  const iso = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
+  const dateStamp = iso.slice(0, 8);
+  const host = `${config.r2AccountId}.r2.cloudflarestorage.com`;
+  const canonicalUri = `/${encodeURIComponent(config.r2BucketName)}/${objectName.split("/").map(encodeURIComponent).join("/")}`;
+  const payloadHash = sha256Hex(uploadInfo.buffer);
+  const canonicalHeaders = `content-type:${uploadInfo.mimeType}\nhost:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${iso}\n`;
+  const signedHeaders = "content-type;host;x-amz-content-sha256;x-amz-date";
+  const canonicalRequest = `PUT\n${canonicalUri}\n\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+  const credentialScope = `${dateStamp}/auto/s3/aws4_request`;
+  const stringToSign = `AWS4-HMAC-SHA256\n${iso}\n${credentialScope}\n${sha256Hex(canonicalRequest)}`;
+  const signature = hmac(r2SigningKey(config.r2SecretAccessKey, dateStamp), stringToSign, "hex");
+  const response = await fetch(`https://${host}${canonicalUri}`, {
+    method: "PUT",
+    headers: {
+      authorization: `AWS4-HMAC-SHA256 Credential=${config.r2AccessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
+      "content-type": uploadInfo.mimeType,
+      "x-amz-content-sha256": payloadHash,
+      "x-amz-date": iso,
+    },
+    body: uploadInfo.buffer,
+  });
+  if (!response.ok) {
+    const message = await response.text().catch(() => "");
+    throw new Error(message || "Upload Cloudflare R2 thất bại.");
+  }
+
+  return {
+    url: `${String(config.r2PublicBaseUrl).replace(/\/$/, "")}/${objectName.split("/").map(encodeURIComponent).join("/")}`,
+    storage: "cloudflare_r2",
+    path: objectName,
+  };
+}
+
+async function uploadEvidenceFile(config, ctx, file, activityId = "") {
+  requirePermission(ctx, "quan_ly_minh_chung");
+  const uploadInfo = assertUploadFile(file);
+  if (activityId) {
+    const activity = await getDoc(config, "activity", `hoat_dong/${activityId}`);
+    if (activity) await assertActivityAccess(config, ctx, activity, "quan_ly_minh_chung");
+  }
+
+  const objectName = buildStorageObjectName(ctx, activityId, file.name, uploadInfo.mimeType);
+  const uploaded =
+    await uploadToCloudinary(config, file, uploadInfo) ??
+    await uploadToCloudflareR2(config, uploadInfo, objectName);
+
+  if (!uploaded) {
+    throw new Error("Chưa cấu hình Cloudinary để upload minh chứng.");
+  }
+
+  return {
+    url: uploaded.url,
+    path: uploaded.path,
+    nguon_luu_tru: uploaded.storage,
+    ten_file: sanitizeFileName(file.name),
+    dinh_dang_file: FILE_EXTENSION_BY_MIME[uploadInfo.mimeType] || "",
+    dung_luong_file: uploadInfo.size,
+    mime_type: uploadInfo.mimeType,
+    loai_minh_chung:
+      uploadInfo.kind === "image"
+        ? "hinh_anh"
+        : uploadInfo.kind === "spreadsheet"
+          ? "danh_sach_tham_gia"
+          : uploadInfo.mimeType === "application/pdf"
+            ? "file_bao_cao"
+            : "file_ke_hoach",
+  };
+}
+
+async function createCloudinaryUploadSignature(config, ctx, payload = {}) {
+  requirePermission(ctx, "quan_ly_minh_chung");
+  if (!config.cloudinaryCloudName || !config.cloudinaryApiKey || !config.cloudinaryApiSecret) {
+    throw new Error("Chưa cấu hình Cloudinary để upload minh chứng.");
+  }
+
+  const activityId = trimString(payload.activityId);
+  if (activityId) {
+    const activity = await getDoc(config, "activity", `hoat_dong/${activityId}`);
+    if (activity) await assertActivityAccess(config, ctx, activity, "quan_ly_minh_chung");
+  }
+
+  const resourceType = payload.resourceType === "image" ? "image" : "auto";
+  const timestamp = Math.floor(Date.now() / 1000);
+  const folder = "quan-ly-doan-hoi/minh-chung";
+  const signatureBase = `folder=${folder}&timestamp=${timestamp}${config.cloudinaryApiSecret}`;
+  return {
+    cloudName: config.cloudinaryCloudName,
+    apiKey: config.cloudinaryApiKey,
+    timestamp,
+    folder,
+    resourceType,
+    signature: createHash("sha1").update(signatureBase).digest("hex"),
+  };
+}
+
+async function getExistingAutoEvidence(config, maHoatDong, loaiMinhChung) {
+  const evidences = await listCollection(config, "activity", "minh_chung");
+  return evidences.find((evidence) =>
+    String(evidence.ma_hoat_dong ?? "") === maHoatDong &&
+    String(evidence.loai_minh_chung ?? "") === loaiMinhChung &&
+    (evidence.tu_dong_tu_hoat_dong === true || String(evidence.nguon_luu_tru ?? "") === "tu_form_hoat_dong")
+  );
+}
+
+async function upsertActivityLinkEvidence(config, activity, linkConfig) {
+  const maHoatDong = String(activity.ma_hoat_dong ?? activity.id ?? "");
+  if (!maHoatDong) return;
+
+  const url = trimString(activity[linkConfig.activityField]);
+  const existing = await getExistingAutoEvidence(config, maHoatDong, linkConfig.loai_minh_chung);
+
+  if (!url) {
+    if (existing?.id) {
+      await deleteDoc(config, "activity", `minh_chung/${existing.id}`);
+    }
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const payload = {
+    ma_hoat_dong: maHoatDong,
+    ten_hoat_dong: trimString(activity.ten_hoat_dong),
+    ten_minh_chung: linkConfig.ten_minh_chung,
+    loai_minh_chung: linkConfig.loai_minh_chung,
+    nguon_luu_tru: linkConfig.nguon_luu_tru,
+    duong_dan_file: linkConfig.urlTarget === "file" ? url : "",
+    duong_dan_thu_muc: linkConfig.urlTarget === "folder" ? url : "",
+    ten_file: "",
+    dinh_dang_file: "",
+    dung_luong_file: 0,
+    ma_nam_hoc: trimString(activity.ma_nam_hoc),
+    ma_loai: trimString(activity.ma_loai),
+    ten_loai: trimString(activity.ten_loai),
+    ma_don_vi: trimString(activity.ma_don_vi),
+    ten_don_vi: trimString(activity.ten_don_vi),
+    don_vi_path_ids: Array.isArray(activity.don_vi_path_ids) ? activity.don_vi_path_ids : [],
+    trang_thai: "dang_hoat_dong",
+    tu_dong_tu_hoat_dong: true,
+    ngay_cap_nhat: now,
+  };
+
+  if (existing?.id) {
+    await updateDoc(config, "activity", `minh_chung/${existing.id}`, payload);
+    return;
+  }
+
+  const response = await addDoc(config, "activity", "minh_chung", {
+    ...payload,
+    ngay_tai_len: now,
+  });
+  const id = String(response.name ?? "").split("/").pop();
+  if (id) await updateDoc(config, "activity", `minh_chung/${id}`, { ma_minh_chung: id });
+}
+
+async function syncActivityLinkEvidences(config, activity) {
+  const maHoatDong = String(activity.ma_hoat_dong ?? activity.id ?? "");
+  if (!maHoatDong) return;
+
+  await Promise.all([
+    upsertActivityLinkEvidence(config, activity, {
+      activityField: "link_bai_viet",
+      ten_minh_chung: "Bài truyền thông Facebook",
+      loai_minh_chung: "link_bai_viet",
+      nguon_luu_tru: "tu_form_hoat_dong",
+      urlTarget: "file",
+    }),
+    upsertActivityLinkEvidence(config, activity, {
+      activityField: "link_thu_muc_minh_chung",
+      ten_minh_chung: "Thư mục Google Drive minh chứng",
+      loai_minh_chung: "link_google_drive",
+      nguon_luu_tru: "google_drive",
+      urlTarget: "folder",
+    }),
+  ]);
+
+  const evidences = await listCollection(config, "activity", "minh_chung");
+  const evidenceCount = evidences.filter((evidence) => String(evidence.ma_hoat_dong ?? "") === maHoatDong).length;
+  await updateDoc(config, "activity", `hoat_dong/${maHoatDong}`, { so_luong_minh_chung: evidenceCount });
+}
+
+async function refreshActivityEvidenceCount(config, maHoatDong) {
+  const activityId = trimString(maHoatDong);
+  if (!activityId) return;
+  const evidences = await listCollection(config, "activity", "minh_chung");
+  const evidenceCount = evidences.filter((evidence) =>
+    String(evidence.ma_hoat_dong ?? "") === activityId && String(evidence.trang_thai ?? "") !== "da_xoa"
+  ).length;
+  await updateDoc(config, "activity", `hoat_dong/${activityId}`, { so_luong_minh_chung: evidenceCount });
+}
+
+function isHttpUrl(value) {
+  try {
+    const url = new URL(trimString(value));
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isFacebookUrl(value) {
+  try {
+    const host = new URL(trimString(value)).hostname.toLowerCase();
+    return host === "facebook.com" || host.endsWith(".facebook.com") || host === "fb.watch" || host === "m.facebook.com";
+  } catch {
+    return false;
+  }
+}
+
+function decodeHtmlEntities(value) {
+  return String(value ?? "")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function getMetaContent(html, names) {
+  for (const name of names) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const patterns = [
+      new RegExp(`<meta[^>]+(?:property|name)=["']${escaped}["'][^>]+content=["']([^"']+)["'][^>]*>`, "i"),
+      new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${escaped}["'][^>]*>`, "i"),
+    ];
+    for (const pattern of patterns) {
+      const match = html.match(pattern);
+      if (match?.[1]) return decodeHtmlEntities(match[1]);
+    }
+  }
+  return "";
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function resolveFacebookOEmbedImage(config, postUrl) {
+  if (!config.metaAppId || !config.metaAppSecret) return "";
+  const appToken = `${config.metaAppId}|${config.metaAppSecret}`;
+  const endpoints = [
+    ["https://graph.facebook.com/v19.0/oembed_post", "url"],
+    ["https://graph.facebook.com/v19.0/oembed_page", "url"],
+  ];
+  for (const [endpoint, urlParam] of endpoints) {
+    const url = new URL(endpoint);
+    url.searchParams.set(urlParam, postUrl);
+    url.searchParams.set("access_token", appToken);
+    const response = await fetchWithTimeout(url);
+    if (!response.ok) continue;
+    const body = await response.json().catch(() => ({}));
+    const thumbnail = trimString(body.thumbnail_url || body.thumbnailUrl);
+    if (isHttpUrl(thumbnail)) return thumbnail;
+  }
+  return "";
+}
+
+async function resolveOpenGraphImage(link) {
+  const response = await fetchWithTimeout(link, {
+    headers: {
+      "user-agent": "facebookexternalhit/1.1 (+https://developers.facebook.com/docs/sharing/webmasters/crawler)",
+      accept: "text/html,application/xhtml+xml",
+    },
+    redirect: "follow",
+  });
+  if (!response.ok) return "";
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType && !contentType.includes("text/html")) return "";
+  const html = await response.text();
+  const image = getMetaContent(html, ["og:image:secure_url", "og:image:url", "og:image", "twitter:image"]);
+  if (!isHttpUrl(image)) return "";
+  return image;
+}
+
+async function resolveActivityLinkPreviewImage(config, link) {
+  const url = trimString(link);
+  if (!isHttpUrl(url) || !isFacebookUrl(url)) return "";
+  try {
+    const oembedImage = await resolveFacebookOEmbedImage(config, url);
+    if (isHttpUrl(oembedImage)) return oembedImage;
+  } catch {
+    // Preview image is a best-effort enhancement; activity saving must continue.
+  }
+  try {
+    return await resolveOpenGraphImage(url);
+  } catch {
+    return "";
+  }
+}
+
+async function withResolvedActivityImage(config, sourceData, previousActivity = null) {
+  const nextData = { ...sourceData };
+  const nextLink = trimString(nextData.link_bai_viet);
+  const previousLink = trimString(previousActivity?.link_bai_viet);
+  const nextImage = trimString(nextData.anh_dai_dien);
+  const previousImageWasAutomatic = previousActivity?.anh_dai_dien_tu_dong === true;
+  const shouldResolve =
+    nextLink &&
+    (!nextImage || (previousActivity && nextLink !== previousLink && previousImageWasAutomatic));
+
+  if (!shouldResolve) {
+    if (nextImage && !previousImageWasAutomatic) nextData.anh_dai_dien_tu_dong = false;
+    return nextData;
+  }
+
+  const previewImage = await resolveActivityLinkPreviewImage(config, nextLink);
+  if (!previewImage) return nextData;
+  return {
+    ...nextData,
+    anh_dai_dien: previewImage,
+    anh_dai_dien_tu_dong: true,
+    nguon_anh_dai_dien: "facebook_preview",
+  };
+}
+
+async function refreshActivityPreviewImage(config, ctx, maHoatDong, force = false) {
+  const activity = await getDoc(config, "activity", `hoat_dong/${maHoatDong}`);
+  if (!activity) throw new Error("Không tìm thấy hoạt động.");
+  await assertActivityAccess(config, ctx, activity, "sua_hoat_dong");
+  const link = trimString(activity.link_bai_viet);
+  if (!link) throw new Error("Hoạt động chưa có link bài truyền thông Facebook.");
+  if (!force && trimString(activity.anh_dai_dien) && activity.anh_dai_dien_tu_dong !== true) {
+    return { image: activity.anh_dai_dien, skipped: true };
+  }
+  const image = await resolveActivityLinkPreviewImage(config, link);
+  if (!image) {
+    return { image: "", updated: false };
+  }
+  await updateDoc(config, "activity", `hoat_dong/${maHoatDong}`, {
+    anh_dai_dien: image,
+    anh_dai_dien_tu_dong: true,
+    nguon_anh_dai_dien: "facebook_preview",
+    ngay_cap_nhat: new Date().toISOString(),
+  });
+  return { image, updated: true };
+}
+
 async function verifyIdToken(config, idToken) {
   if (!config.identityApiKey) {
     throw new Error("Gateway thiếu VITE_IDENTITY_FIREBASE_API_KEY.");
@@ -463,9 +1000,10 @@ async function createActivity(config, ctx, rawData, status = "ban_nhap") {
   if (!unit) throw new Error("Đơn vị không tồn tại.");
 
   const maHoatDong = rawData.ma_hoat_dong || `hd_${rawData.ma_nam_hoc}_${Date.now()}`;
+  const resolvedData = await withResolvedActivityImage(config, rawData);
   const now = new Date().toISOString();
   const data = {
-    ...rawData,
+    ...resolvedData,
     ma_hoat_dong: maHoatDong,
     ten_nam_hoc: year.ten_nam_hoc,
     ten_loai: type.ten_loai,
@@ -475,16 +1013,16 @@ async function createActivity(config, ctx, rawData, status = "ban_nhap") {
     trang_thai: status,
     nguoi_tao: ctx.uid,
     ten_nguoi_tao: ctx.profile.ho_ten,
-    so_luong_minh_chung: Number(rawData.so_luong_minh_chung ?? 0),
-    da_luu_tru: Boolean(rawData.da_luu_tru ?? false),
+    so_luong_minh_chung: Number(resolvedData.so_luong_minh_chung ?? 0),
+    da_luu_tru: Boolean(resolvedData.da_luu_tru ?? false),
     tu_khoa_tim_kiem:
-      rawData.tu_khoa_tim_kiem ??
+      resolvedData.tu_khoa_tim_kiem ??
       createSearchKeywords([
-        rawData.ten_hoat_dong,
+        resolvedData.ten_hoat_dong,
         year.ten_nam_hoc,
         type.ten_loai,
         unit.ten_don_vi,
-        rawData.dia_diem,
+        resolvedData.dia_diem,
       ]),
     ngay_tao: now,
     ngay_cap_nhat: now,
@@ -492,6 +1030,7 @@ async function createActivity(config, ctx, rawData, status = "ban_nhap") {
   };
 
   await setDoc(config, "activity", `hoat_dong/${maHoatDong}`, data);
+  await syncActivityLinkEvidences(config, data);
   await addAuditLog(config, ctx, {
     hanh_dong: status === "cho_duyet" ? "them_va_gui_duyet_hoat_dong" : "them_hoat_dong",
     module: "hoat_dong",
@@ -529,21 +1068,25 @@ async function updateActivity(config, ctx, maHoatDong, data) {
     data.ma_don_vi ? getDoc(config, "identity", `don_vi/${data.ma_don_vi}`) : Promise.resolve(null),
   ]);
 
-  await updateDoc(config, "activity", `hoat_dong/${maHoatDong}`, {
-    ...data,
+  const resolvedData = await withResolvedActivityImage(config, data, activity);
+  const updatePayload = {
+    ...resolvedData,
     ...(nextYear ? { ten_nam_hoc: nextYear.ten_nam_hoc } : {}),
     ...(nextType ? { ten_loai: nextType.ten_loai, mau_hien_thi: nextType.mau_hien_thi } : {}),
     ...(nextUnit ? { ten_don_vi: nextUnit.ten_don_vi } : {}),
     ...(nextUnitId ? { don_vi_path_ids: await getUnitPathIds(config, nextUnitId) } : {}),
     tu_khoa_tim_kiem: createSearchKeywords([
-      data.ten_hoat_dong ?? activity.ten_hoat_dong,
+      resolvedData.ten_hoat_dong ?? activity.ten_hoat_dong,
       nextYear?.ten_nam_hoc ?? activity.ten_nam_hoc,
       nextType?.ten_loai ?? activity.ten_loai,
       nextUnit?.ten_don_vi ?? activity.ten_don_vi,
-      data.dia_diem ?? activity.dia_diem,
+      resolvedData.dia_diem ?? activity.dia_diem,
     ]),
     ngay_cap_nhat: new Date().toISOString(),
-  });
+  };
+
+  await updateDoc(config, "activity", `hoat_dong/${maHoatDong}`, updatePayload);
+  await syncActivityLinkEvidences(config, { ...activity, ...updatePayload, ma_hoat_dong: maHoatDong });
   await addAuditLog(config, ctx, {
     hanh_dong: "sua_hoat_dong",
     module: "hoat_dong",
@@ -659,6 +1202,7 @@ async function addEvidence(config, ctx, data) {
   if (id) {
     await updateDoc(config, "activity", `minh_chung/${id}`, { ma_minh_chung: id });
   }
+  await refreshActivityEvidenceCount(config, data.ma_hoat_dong);
   await addAuditLog(config, ctx, {
     hanh_dong: "them_minh_chung",
     module: "minh_chung",
@@ -682,6 +1226,12 @@ async function updateEvidence(config, ctx, maMinhChung, data) {
     ...data,
     ...(data.ma_don_vi ? { don_vi_path_ids: await getUnitPathIds(config, String(data.ma_don_vi)) } : {}),
   });
+  await Promise.all([
+    refreshActivityEvidenceCount(config, evidence.ma_hoat_dong),
+    data.ma_hoat_dong && data.ma_hoat_dong !== evidence.ma_hoat_dong
+      ? refreshActivityEvidenceCount(config, data.ma_hoat_dong)
+      : Promise.resolve(),
+  ]);
   await addAuditLog(config, ctx, {
     hanh_dong: "sua_minh_chung",
     module: "minh_chung",
@@ -701,6 +1251,7 @@ async function deleteEvidence(config, ctx, maMinhChung) {
     throw error;
   }
   await deleteDoc(config, "activity", `minh_chung/${maMinhChung}`);
+  await refreshActivityEvidenceCount(config, evidence.ma_hoat_dong);
   await addAuditLog(config, ctx, {
     hanh_dong: "xoa_minh_chung",
     module: "minh_chung",
@@ -731,6 +1282,8 @@ async function handleActivityAction(config, ctx, body) {
         payload.status,
         payload.comment ?? "",
       );
+    case "activities.refreshPreviewImage":
+      return refreshActivityPreviewImage(config, ctx, payload.id, Boolean(payload.force));
     default: {
       const error = new Error("Gateway chưa hỗ trợ thao tác này.");
       error.status = 400;
@@ -742,6 +1295,10 @@ async function handleActivityAction(config, ctx, body) {
 async function handleEvidenceAction(config, ctx, body) {
   const { action, payload = {} } = body;
   switch (action) {
+    case "evidences.upload":
+      return uploadEvidenceFile(config, ctx, payload.file, payload.activityId);
+    case "evidences.cloudinarySignature":
+      return createCloudinaryUploadSignature(config, ctx, payload);
     case "evidences.create":
       return addEvidence(config, ctx, payload.data);
     case "evidences.update":
