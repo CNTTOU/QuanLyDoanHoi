@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cp, rm } from "node:fs/promises";
+import { cp, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -35,6 +35,30 @@ for (const app of apps) {
   await cp(join(root, app.name, "dist"), join(outputDir, app.output), {
     recursive: true,
   });
+}
+
+async function assertReferencedAssets(appOutput) {
+  const indexPath = join(outputDir, appOutput, "index.html");
+  const html = await readFile(indexPath, "utf8");
+  const references = Array.from(
+    html.matchAll(/(?:src|href)="\/([^"]+\.(?:js|css))"/g),
+    (match) => match[1],
+  );
+
+  for (const reference of references) {
+    const assetPath = join(outputDir, ...reference.split("/"));
+    try {
+      await stat(assetPath);
+    } catch {
+      throw new Error(
+        `Missing asset referenced by ${appOutput}/index.html: /${reference}`,
+      );
+    }
+  }
+}
+
+for (const app of apps) {
+  await assertReferencedAssets(app.output);
 }
 
 console.log("Prepared Vercel static output in dist/.");

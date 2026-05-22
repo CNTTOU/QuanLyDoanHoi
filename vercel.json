@@ -1,40 +1,45 @@
 {
   "buildCommand": "npm run vercel-build",
   "outputDirectory": "dist",
-  "routes": [
+  "cleanUrls": false,
+  "trailingSlash": false,
+  "rewrites": [
     {
-      "handle": "filesystem"
+      "source": "/api/:path*",
+      "destination": "/api/:path*"
     },
     {
-      "src": "/api/(.*)",
-      "dest": "/api/$1"
+      "source": "/login/assets/:path*",
+      "destination": "/login/assets/:path*"
     },
     {
-      "src": "/login/assets/(.*)",
-      "dest": "/login/assets/$1"
+      "source": "/hoat-dong/assets/:path*",
+      "destination": "/hoat-dong/assets/:path*"
     },
     {
-      "src": "/hoat-dong/assets/(.*)",
-      "dest": "/hoat-dong/assets/$1"
+      "source": "/login/:path*",
+      "destination": "/login/index.html"
     },
     {
-      "src": "/login(?:/(.*))?",
-      "dest": "/login/index.html"
+      "source": "/hoat-dong/:path*",
+      "destination": "/hoat-dong/index.html"
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/hoat-dong/featured",
+      "permanent": false
     },
     {
-      "src": "/hoat-dong(?:/(.*))?",
-      "dest": "/hoat-dong/index.html"
+      "source": "/login",
+      "destination": "/login/",
+      "permanent": false
     },
     {
-      "src": "/",
-      "status": 302,
-      "headers": {
-        "Location": "/hoat-dong/featured"
-      }
-    },
-    {
-      "src": "/(.*)",
-      "status": 404
+      "source": "/hoat-dong",
+      "destination": "/hoat-dong/",
+      "permanent": false
     }
   ]
 }
