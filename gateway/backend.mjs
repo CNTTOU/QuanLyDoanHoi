@@ -572,7 +572,7 @@ async function deleteActivity(config, ctx, maHoatDong) {
 async function setFeatured(config, ctx, maHoatDong, featured) {
   const activity = await getDoc(config, "activity", `hoat_dong/${maHoatDong}`);
   if (!activity) throw new Error("Không tìm thấy hoạt động.");
-  await assertActivityAccess(config, ctx, activity, "sua_hoat_dong");
+  await assertActivityAccess(config, ctx, activity, "quan_ly_hoat_dong_noi_bat");
   if (featured && activity.trang_thai !== "da_duyet") {
     throw new Error("Chỉ hoạt động đã duyệt mới được hiển thị nổi bật.");
   }
