@@ -466,6 +466,23 @@ function getUploadKind(mimeType) {
   return "";
 }
 
+function getEvidenceStorageFolder(mimeType) {
+  if (IMAGE_MIME_TYPES.has(mimeType)) return "images";
+  if (mimeType === "application/pdf") return "pdfs";
+  if (
+    mimeType === "application/msword" ||
+    mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  ) {
+    return "words";
+  }
+  if (SPREADSHEET_MIME_TYPES.has(mimeType)) return "excels";
+  return "others";
+}
+
+function getCloudinaryEvidenceFolder(uploadInfo) {
+  return `quan-ly-doan-hoi/minh-chung/${getEvidenceStorageFolder(uploadInfo.mimeType)}`;
+}
+
 function assertUploadFile(file) {
   const extension = trimString(file?.name).split(".").pop()?.toLowerCase() || "";
   const mimeType = trimString(file?.type).toLowerCase() || MIME_BY_FILE_EXTENSION[extension] || "";
@@ -491,7 +508,8 @@ function buildStorageObjectName(ctx, activityId, fileName, mimeType) {
   const safeName = sanitizeFileName(fileName).replace(/\.[a-z0-9]+$/i, "");
   const unitId = sanitizeFileName(ctx.profile.ma_don_vi || "don-vi");
   const targetActivityId = sanitizeFileName(activityId || "khong-gan-hoat-dong");
-  return `minh-chung/${unitId}/${targetActivityId}/${Date.now()}-${randomUUID()}-${safeName}.${extension}`;
+  const storageFolder = getEvidenceStorageFolder(mimeType);
+  return `minh-chung/${storageFolder}/${unitId}/${targetActivityId}/${Date.now()}-${randomUUID()}-${safeName}.${extension}`;
 }
 
 async function uploadToFirebaseStorage(config, file, uploadInfo, objectName) {
@@ -538,7 +556,7 @@ async function uploadToCloudinary(config, file, uploadInfo) {
   }
   const resourceType = uploadInfo.kind === "image" ? "image" : "auto";
   const timestamp = Math.floor(Date.now() / 1000);
-  const folder = "quan-ly-doan-hoi/minh-chung";
+  const folder = getCloudinaryEvidenceFolder(uploadInfo);
   const signatureBase = `folder=${folder}&timestamp=${timestamp}${config.cloudinaryApiSecret}`;
   const signature = createHash("sha1").update(signatureBase).digest("hex");
   const formData = new FormData();
@@ -671,9 +689,13 @@ async function createCloudinaryUploadSignature(config, ctx, payload = {}) {
     if (activity) await assertActivityAccess(config, ctx, activity, "quan_ly_minh_chung");
   }
 
+  const mimeType = trimString(payload.mimeType).toLowerCase();
   const resourceType = payload.resourceType === "image" ? "image" : "auto";
   const timestamp = Math.floor(Date.now() / 1000);
-  const folder = "quan-ly-doan-hoi/minh-chung";
+  const folder = getCloudinaryEvidenceFolder({
+    mimeType,
+    kind: getUploadKind(mimeType) || (resourceType === "image" ? "image" : "document"),
+  });
   const signatureBase = `folder=${folder}&timestamp=${timestamp}${config.cloudinaryApiSecret}`;
   return {
     cloudName: config.cloudinaryCloudName,
@@ -1096,20 +1118,39 @@ async function updateActivity(config, ctx, maHoatDong, data) {
   return { id: maHoatDong };
 }
 
-async function deleteActivity(config, ctx, maHoatDong) {
+async function deleteRelatedActivityArchiveData(config, maHoatDong) {
+  const relatedCollections = ["minh_chung", "duyet_hoat_dong"];
+  const deleted = {};
+
+  for (const collectionName of relatedCollections) {
+    const rows = await listCollection(config, "activity", collectionName);
+    const matches = rows.filter((row) => String(row.ma_hoat_dong ?? "") === maHoatDong);
+    await Promise.all(matches.map((row) => deleteDoc(config, "activity", `${collectionName}/${row.id}`)));
+    deleted[collectionName] = matches.length;
+  }
+
+  return deleted;
+}
+
+async function deleteActivity(config, ctx, maHoatDong, deleteRelatedArchiveData = false) {
   const activity = await getDoc(config, "activity", `hoat_dong/${maHoatDong}`);
   if (!activity) throw new Error("Không tìm thấy hoạt động.");
   await assertActivityAccess(config, ctx, activity, "xoa_hoat_dong");
   await assertSchoolYearUnlocked(config, ctx, activity.ma_nam_hoc);
+  const deletedRelated = deleteRelatedArchiveData
+    ? await deleteRelatedActivityArchiveData(config, maHoatDong)
+    : {};
   await deleteDoc(config, "activity", `hoat_dong/${maHoatDong}`);
   await addAuditLog(config, ctx, {
     hanh_dong: "xoa_hoat_dong",
     module: "hoat_dong",
     ma_doi_tuong: maHoatDong,
-    noi_dung: `Xóa hoạt động ${activity.ten_hoat_dong}`,
+    noi_dung: deleteRelatedArchiveData
+      ? `Xóa hoạt động ${activity.ten_hoat_dong} và dữ liệu liên quan: ${deletedRelated.minh_chung ?? 0} minh chứng, ${deletedRelated.duyet_hoat_dong ?? 0} lịch sử duyệt.`
+      : `Xóa hoạt động ${activity.ten_hoat_dong}, giữ nguyên dữ liệu liên quan bên kho lưu trữ.`,
     muc_do: "canh_bao",
   });
-  return { id: maHoatDong };
+  return { id: maHoatDong, deletedRelated };
 }
 
 async function setFeatured(config, ctx, maHoatDong, featured) {
@@ -1270,7 +1311,7 @@ async function handleActivityAction(config, ctx, body) {
     case "activities.update":
       return updateActivity(config, ctx, payload.id, payload.data);
     case "activities.delete":
-      return deleteActivity(config, ctx, payload.id);
+      return deleteActivity(config, ctx, payload.id, Boolean(payload.deleteRelatedArchiveData));
     case "activities.featured":
       return setFeatured(config, ctx, payload.id, payload.featured);
     case "activities.transition":
